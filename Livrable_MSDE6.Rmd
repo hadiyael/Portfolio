@@ -1,0 +1,871 @@
+---
+title: "Livrable MSDE6 - Projet sous R"
+subtitle: "Prédire le prix d’une propriété immobilière par régression linéaire multiple"
+author:
+  - Hadiya El Ouazzani
+  - Majda Khayi
+date: "2024-07-26"
+output:
+  pdf_document:
+    includes:
+      in_header: "wrap-code.tex"
+
+---
+
+```{r setup, include=FALSE}
+
+knitr::opts_chunk$set(echo = FALSE, warning=FALSE, message=FALSE)
+suppressPackageStartupMessages({
+  library(dplyr)
+  library(tidyr)
+  library(ggplot2)
+  library(naniar)
+  library(reshape2)
+})
+setwd("C:/Users/USER/OneDrive/Desktop/MSDE TP R/Projet MSDE6")
+rm(list=ls())
+```
+
+## 2. Description sommaire des données
+
+```{r, include = FALSE}
+# Charger les données
+df <- read.csv("train.csv")
+
+# Nombre de variables et d'observations
+ncol(df)
+nrow(df)
+```
+
+2.1. Le nombre de variables dans le jeu de données est `r ncol(df)` et le nombre d'observations est `r nrow(df)`.
+
+
+
+```{r, echo=FALSE, inclue=FALSE}
+# Types de variables
+types <- sapply(df, class)
+
+data_types <- function(frame) {
+  res <- lapply(frame, class)
+  res_frame <- data.frame(unlist(res))
+  str(res_frame)
+  print(table(res_frame))
+  print(res_frame)
+}
+
+# Compter le nombre de variables numériques et catégorielles
+num_vars <- names(types[types %in% c("numeric", "integer")])
+cat_vars <- names(types[types %in% c("factor", "character")])
+
+```
+
+
+2.2. Le nombre de variables numériques est : `r length(num_vars)`. Le nombre de variables catégorielles est : `r length(cat_vars)`.
+
+2.3.
+```{r}
+# Calcul du nombre de valeurs manquantes
+missing_data <- df %>%
+  summarise_all(~sum(is.na(.))) %>%
+  gather(key = "variable", value = "missing_count") %>%
+  filter(missing_count > 0)
+
+# Calcul du pourcentage de valeurs manquantes
+missing_data <- missing_data %>%
+  mutate(missing_percentage = (missing_count / nrow(df)) * 100)
+
+```
+
+```{r, }
+# Affichage des résultats
+missing_values <- data.frame(
+  Variable = names(sapply(df, function(x) sum(is.na(x)))[sapply(df, function(x) sum(is.na(x))) > 0]),
+  MissingCount = sapply(df, function(x) sum(is.na(x)))[sapply(df, function(x) sum(is.na(x))) > 0],
+  MissingPercentage = sapply(df, function(x) sum(is.na(x)) / length(x) * 100)[sapply(df, function(x) sum(is.na(x)) / length(x) * 100) > 0]
+)
+
+knitr::kable(missing_values, format = "markdown", caption = "Nombre et pourcentage de valeurs manquantes par variable")
+```
+
+
+
+```{r, echo=FALSE}
+library(visdat)
+# Filtrage des variables avec des valeurs manquantes
+df_filtered <- df %>%
+  select(which(colSums(is.na(df)) > 0))
+
+# Visualisation de la structure des données filtrées
+vis_dat(df_filtered) +
+  labs(title = "Positions d'occurence des valeurs manquantes")
+
+
+```
+
+2.4. La variable cible est : SalePrice
+
+2.5. 
+```{r}
+# Fonction pour détecter les outliers basés sur les percentiles
+detect_outliers <- function(x) {
+  quantiles <- quantile(x, probs = c(0.025, 0.975), na.rm = TRUE)
+  outliers <- which(x < quantiles[1] | x > quantiles[2])
+  return(length(outliers))
+}
+
+# Variables quantitatives à analyser
+quant_vars <- c("LotFrontage", "LotArea", "OverallQual", "OverallCond", "YearBuilt",
+                "X1stFlrSF", "X2ndFlrSF", "TotRmsAbvGrd", "GarageArea", "WoodDeckSF", "PoolArea", "SalePrice")
+
+# Détection des outliers
+outliers_summary <- sapply(df[quant_vars], detect_outliers)
+outliers_percentage <- (outliers_summary / nrow(df)) * 100
+
+outliers_df <- data.frame(
+  Variable = quant_vars,
+  Outliers = outliers_summary,
+  Percentage = outliers_percentage
+)
+
+knitr::kable(outliers_df, format = "markdown", caption = "Nombre et pourcentage des outliers")
+```
+
+
+
+
+
+## 3. Préparation   des   données
+3.1.  Sélection des variables
+
+  
+```{r, echo = TRUE}
+selected_vars <- c("LotFrontage", "LotArea", "OverallQual", "OverallCond", "YearBuilt",
+                   "X1stFlrSF", "X2ndFlrSF", "TotRmsAbvGrd", "GarageArea", "WoodDeckSF","PoolArea", "SalePrice")
+
+train_selected <- df %>% select(all_of(selected_vars))
+
+dim(train_selected)
+```
+
+3.2. Supprimer les lignes contenant des données manquantes
+
+```{r, echo=TRUE}
+train_clean <- train_selected %>% drop_na()
+dim(train_clean)
+```
+
+3.3. Supprimer les outliers
+```{r}
+remove_outliers <- function(data, vars) {
+  for (var in vars) {
+    outliers <- detect_outliers(data[[var]])
+    data <- data[-outliers, ]
+  }
+  return(data)
+}
+
+train_clean <- remove_outliers(train_clean, quant_vars) 
+```
+
+Les dimensions finales du tableau après la Data Preparation sont : `r dim(train_clean)` après l'élimination des outliers.
+
+## 4. Analyse Exploratoire des Données
+4.1. 
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+
+library(kableExtra)
+
+
+# Corrélations entre les variables quantitatives et SalePrice
+correlations <- cor(train_clean, use = "complete.obs")
+correlations_with_saleprice <- correlations[, "SalePrice"]
+correlations_with_saleprice <- sort(correlations_with_saleprice, decreasing = TRUE)
+
+knitr::kable(correlations_with_saleprice, format = "markdown", caption = "Tableau des corrélations avec la variable cible SalePrice")
+```
+
+```{r EDA, warning=FALSE}
+# Histogrammes des variables quantitatives
+train_clean %>%
+  gather(key = "variable", value = "value", -SalePrice) %>%
+  ggplot(aes(x = value)) +
+  geom_histogram(bins = 30, fill = "blue", alpha = 0.7) +
+  facet_wrap(~variable, scales = "free") +
+  theme_minimal() +
+  labs(title = "Histogrammes des variables quantitatives")
+
+# Scatter plots des variables quantitatives vs SalePrice
+train_clean %>%
+  gather(key = "variable", value = "value", -SalePrice) %>%
+  ggplot(aes(x = value, y = SalePrice)) +
+  geom_point(alpha = 0.6) +
+  geom_smooth(method = "lm", se = FALSE, color = "red") +
+  facet_wrap(~variable, scales = "free") +
+  theme_minimal() +
+  labs(title = "Scatter plots des variables quantitatives vs SalePrice")
+
+# Heatmap des corrélations
+library(reshape2)
+correlations_melted <- melt(correlations)
+ggplot(correlations_melted, aes(x = Var1, y = Var2, fill = value)) +
+  geom_tile() +
+  scale_fill_gradient2(low = "blue", high = "red", mid = "white", midpoint = 0) +
+  theme_minimal() +
+  labs(title = "Heatmap des corrélations", x = "", y = "") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, size = 10),
+        axis.text.y = element_text(size = 10))
+
+```
+
+
+1. **Variables prédictives fortes**:
+   - **OverallQual (Qualité générale)** : La qualité générale de la maison semble être un prédicteur majeur du prix. Les maisons de meilleure qualité ont tendance à avoir un prix plus élevé.
+   - **GarageArea (Surface du garage)** : Une plus grande surface de garage est associée à un prix de maison plus élevé, probablement en raison de la commodité accrue pour les véhicules et le stockage.
+   - **X1stFlrSF (Surface du premier étage)** : La superficie du premier étage est souvent corrélée positivement avec le prix, reflétant la taille habitable principale de la maison.
+
+2. **Variables contributrices**:
+   - **YearBuilt (Année de construction)** : Les maisons plus récentes peuvent avoir un prix plus élevé en raison de constructions plus modernes et de meilleures installations.
+   - **TotRmsAbvGrd (Nombre total de chambres)** : Un nombre plus élevé de chambres au-dessus du sol peut indiquer une maison plus grande et donc un prix potentiellement plus élevé.
+
+3. **Variables moins impactantes**:
+   - Les scatterplots et corrélations de **PoolArea** et **LotArea** suggèrent qu'elles peuvent être éliminées du modèle.
+
+4.2. Hypothèse de prédiction du prix de l'immobilier:
+
+Le prix des maisons à Ames, Iowa, peut être principalement prédit par la qualité générale de la maison, la surface habitable (X1stFlrSF), la surface du garage et l'année de construction. Ces variables fournissent une base solide pour un modèle de prédiction du prix de l'immobilier, tandis que d'autres caractéristiques comme la taille du lot et les aménagements extérieurs ont une influence plus marginale.
+
+En résumé, cette hypothèse suggère que les caractéristiques essentielles liées à la qualité, à la taille et à la fonctionnalité de la maison sont cruciales pour prédire son prix à Ames, Iowa.
+
+
+## 5. Prédiction  à  l’aide   de  la   régression  linéaire  multiple
+5.1. Modèle de régression linéaire multiple 
+```{r, echo=TRUE}
+# Centrer et réduire les variables indépendantes (standardisation)
+df_scaled <- train_clean
+df_scaled[, c("OverallQual", "GarageArea", "X1stFlrSF", "YearBuilt", "TotRmsAbvGrd")] <- scale(train_clean[, c("OverallQual", "GarageArea", "X1stFlrSF", "YearBuilt", "TotRmsAbvGrd")])
+
+# Développer le modèle de régression linéaire multiple avec les variables standardisées
+model <- lm(SalePrice ~ OverallQual + GarageArea + X1stFlrSF + YearBuilt + TotRmsAbvGrd, data = df_scaled)
+
+# Résumer les résultats du modèle
+model_summary <- summary(model)
+```
+
+5.2. Commentaire   
+
+```{r}
+# Extraire les coefficients du modèle et les convertir en data frame
+coefficients_df <- as.data.frame(coef(model_summary))
+coefficients_df$Term <- rownames(coefficients_df)
+coefficients_df <- coefficients_df[, c( "Estimate", "Std. Error", "t value", "Pr(>|t|)")]
+colnames(coefficients_df) <- c("Estimate", "Standard Error", "t Value", "P-Value")
+
+# Extraire les statistiques supplémentaires
+r_squared <- model_summary$r.squared
+adj_r_squared <- model_summary$adj.r.squared
+f_statistic <- model_summary$fstatistic
+f_statistic_value <- f_statistic[1]
+f_statistic_df1 <- f_statistic[2]
+f_statistic_df2 <- f_statistic[3]
+f_statistic_pvalue <- pf(f_statistic_value, f_statistic_df1, f_statistic_df2, lower.tail = FALSE)
+
+# Créer un tableau avec les coefficients et les statistiques supplémentaires
+summary_stats <- data.frame(
+  Term = c("R-squared", "Adjusted R-squared", "F-statistic", "F-statistic p-value"),
+  Value = c(r_squared, adj_r_squared, f_statistic_value, f_statistic_pvalue)
+)
+```
+
+
+
+```{r}
+# Afficher les résultats
+knitr::kable(summary_stats, format = "markdown", caption = "Statistiques du modèle de régression linéaire")
+```
+
+Résumé des résultats :
+
+- **R-squared et Adjusted R-squared** : Ces valeurs mesurent la proportion de la variance expliquée par le modèle. Dans votre cas, l'ajustement multiple R-squared est de 0.7429 et l'ajustement ajusté R-squared est de 0.742. Cela signifie que 74.29% de la variance des prix de vente (SalePrice) est expliquée par les prédicteurs du modèle. Cela indique un bon ajustement du modèle.
+- **p-value des coefficients** : Les p-values associées à chaque coefficient sont très faibles (bien en dessous de 0.05), ce qui signifie que tous les coefficients sont statistiquement significatifs.
+
+
+5.3. Vérifier les hypothèses du modèle sur les erreurs
+
+### 1. Normalité des résidus
+
+```{r}
+qqnorm(residuals(model))
+qqline(residuals(model), col = "red")
+
+```
+
+- **Q-Q Plot** : Le graphique Q-Q Plot montre que les résidus s'écartent de la ligne théorique, ce qui indique que les résidus ne suivent pas une distribution normale.
+
+```{r}
+# Test de Shapiro-Wilk
+shapiro_test <- shapiro.test(residuals(model))
+print(shapiro_test)
+```
+- **Test de Shapiro-Wilk** : Avec une valeur W = 0.84614 et un p-value < 2.2e-16, le test de Shapiro-Wilk rejette l'hypothèse nulle de normalité des résidus. Cela confirme que les résidus ne sont pas normalement distribués.
+
+### 2. Homoscedasticité
+
+```{r}
+plot(fitted(model), residuals(model), main = "Résidus vs Valeurs prédites", xlab = "Valeurs prédites", ylab = "Résidus")
+abline(h = 0, col = "red")
+```
+
+- **Graphique des résidus vs valeurs prédites** : Le graphique montre une tendance des résidus qui pourrait indiquer une hétéroscedasticité, c'est-à-dire que la variance des résidus n'est pas constante.
+
+```{r}
+library(lmtest)
+bptest_result <- bptest(model)
+print(bptest_result)
+```
+
+- **Test de Breusch-Pagan** : Avec un BP = 218.37 et un p-value < 2.2e-16, le test de Breusch-Pagan rejette l'hypothèse nulle d'homoscedasticité, confirmant l'hétéroscedasticité des résidus.
+
+### 3. Indépendance des résidus
+
+```{r}
+dwtest(model)
+```
+
+- **Test de Durbin-Watson** : Avec une valeur DW = 1.9746 et un p-value = 0.3306, le test de Durbin-Watson ne rejette pas l'hypothèse nulle d'absence d'autocorrélation des résidus. Cela indique que les résidus sont indépendants les uns des autres.
+
+### Conclusion
+
+Les hypothèses de normalité et d'homoscedasticité des résidus ne sont pas vérifiées dans ce modèle de régression linéaire multiple, comme le montrent les résultats des tests de Shapiro-Wilk et de Breusch-Pagan, ainsi que les graphiques correspondants. Cependant, l'hypothèse d'indépendance des résidus est respectée selon le test de Durbin-Watson.
+
+5.4.
+Nous avons inclus les prédicteurs OverallQual, GarageArea, X1stFlrSF, YearBuilt, et TotRmsAbvGrd car ce sont des variables quantitatives pertinentes susceptibles d'influencer le prix de vente (SalePrice).
+
+Interprétation des coefficients :
+
+- OverallQual : Un coefficient élevé ici indique que la qualité globale de la maison a un impact significatif et positif sur le prix de vente.
+- GarageArea : Un coefficient positif indique que plus la superficie du garage est grande, plus le prix de vente est élevé.
+- X1stFlrSF : Un coefficient positif indique que plus la superficie du premier étage est grande, plus le prix de vente est élevé.
+- YearBuilt : Un coefficient positif indique que les maisons plus récentes ont tendance à se vendre plus cher.
+- TotRmsAbvGrd : Un coefficient positif indique que plus il y a de pièces au-dessus du sol, plus le prix de vente est élevé.
+Prédicteurs significatifs :
+
+Pour identifier les prédicteurs significatifs, nous regardons les p-values associées aux coefficients. Si la p-value est inférieure à 0.05, le prédicteur est significatif.
+
+```{r}
+knitr::kable(summary(model)$coefficients, format = "markdown", caption = "Nombre et pourcentage de valeurs manquantes par variable")
+```
+
+## 6. Évaluation  et  Validation   du  Modèle
+6.1.
+
+```{r, echo=TRUE, fig.width=7, fig.height=5}
+# Charger les fichiers de données
+test <- read.csv("test.csv")
+sample_submission <- read.csv("sample_submission.csv")
+
+# Concaténer les deux fichiers pour inclure la variable cible SalePrice
+test_data <- cbind(test, SalePrice = sample_submission$SalePrice)
+
+# Variables gardées
+test_data <- test_data[, selected_vars]
+
+
+# Supprimer les lignes avec des données manquantes
+test_data <- na.omit(test_data)
+
+# Standardiser les données de test en utilisant les statistiques de l'ensemble d'entraînement
+mean_train <- colMeans(train_clean[, c("LotFrontage", "LotArea", "OverallQual", "OverallCond", "YearBuilt",
+                                           "X1stFlrSF", "X2ndFlrSF", "TotRmsAbvGrd", "GarageArea", "WoodDeckSF", "PoolArea")])
+sd_train <- apply(train_clean[, c("LotFrontage", "LotArea", "OverallQual", "OverallCond", "YearBuilt",
+                                      "X1stFlrSF", "X2ndFlrSF", "TotRmsAbvGrd", "GarageArea", "WoodDeckSF", "PoolArea")], 2, sd)
+test_data_scaled <- scale(test_data[, c("LotFrontage", "LotArea", "OverallQual", "OverallCond", "YearBuilt",
+                                            "X1stFlrSF", "X2ndFlrSF", "TotRmsAbvGrd", "GarageArea", "WoodDeckSF", "PoolArea")], center = mean_train, scale = sd_train)
+
+# Convertir en data frame
+test_data_scaled <- as.data.frame(test_data_scaled)
+
+# Ajouter la variable SalePrice aux données mises à l'échelle pour les évaluations
+
+test_data_scaled$SalePrice <- test_data$SalePrice
+
+# Faire des prédictions avec le modèle ajusté
+predictions <- predict(model, newdata = test_data_scaled)
+
+# Vérifier que les prédictions et les valeurs réelles ont la même longueur
+if (length(predictions) != nrow(test_data)) {
+  stop("La longueur des prédictions ne correspond pas au nombre de valeurs réelles.")
+}
+
+# Calculer les métriques de performance
+actuals <- test_data$SalePrice
+RMSE <- sqrt(mean((predictions - actuals)^2))
+MAE <- mean(abs(predictions - actuals))
+R2 <- cor(predictions, actuals)^2
+
+```
+
+RMSE : `r RMSE`;
+
+MAE : `r MAE`;
+
+R2 : `r R2`;
+
+
+
+## 7. Comparaison   des  Fonctions  de   Régression  Linéaire   sous   R
+7.1. 
+```{r, echo=TRUE, results='hide'}
+# BASE::lm()
+model_lm <- lm(SalePrice ~ OverallQual + GarageArea + X1stFlrSF + YearBuilt + TotRmsAbvGrd, data = df_scaled)
+summary(model_lm)
+
+# MASS::stepAIC()
+library(MASS)
+model_stepAIC <- stepAIC(lm(SalePrice ~ ., data = df_scaled), direction = "both")
+summary(model_stepAIC)
+
+
+# bestglm::bestglm()
+library(bestglm)
+model_bestglm <- bestglm(df_scaled, family = gaussian)
+summary(model_bestglm)
+model_Best <- model_bestglm$BestModel
+summary(model_Best)
+
+# Leaps::regsubsets()
+library(leaps)
+model_regsubsets <- regsubsets(SalePrice ~ ., data = df_scaled, nvmax = 5)
+summary(model_regsubsets)
+subset_summary  <- summary(model_regsubsets)
+# View R-squared values
+print(subset_summary$rsq)
+
+# View Adjusted R-squared values
+print(subset_summary$adjr2)
+
+# View Cp values
+print(subset_summary$cp)
+
+# View the matrix of selected variables for each model
+print(subset_summary$outmat)
+
+# MASS::rlm()
+model_rlm <- rlm(SalePrice ~ OverallQual + GarageArea + X1stFlrSF + YearBuilt + TotRmsAbvGrd, data = df_scaled)
+summary(model_rlm)
+
+# BASE::glm()
+model_glm <- glm(SalePrice ~ OverallQual + GarageArea + X1stFlrSF + YearBuilt + TotRmsAbvGrd, data = df_scaled)
+summary(model_glm)
+
+```
+
+7.2. Principales différences
+En comparant les différentes fonctions pour la régression linéaire en R, voici un aperçu des principales différences en termes de syntaxe, d'ajustement du modèle et d'interprétation des résultats :
+
+
+##### 1. **BASE::lm()**
+
+- **Syntaxe** : lm(formula, data)
+
+- **Ajustement du modèle** : 
+  - Utilise la méthode des moindres carrés ordinaires (OLS).
+  - Ajuste le modèle en minimisant la somme des carrés des résidus.
+
+- **Interprétation des résultats** :
+  - Résumé avec les coefficients, erreurs standard, valeurs t et p-values.
+  - Le `Multiple R-squared` indique la proportion de la variance expliquée par le modèle.
+
+##### 2. **MASS::stepAIC()**
+
+- **Syntaxe** : `stepAIC(model, direction = "both")`
+ 
+
+- **Ajustement du modèle** : 
+  - Utilise la sélection de modèle basée sur le critère d'information d'Akaike (AIC) pour sélectionner les variables.
+  - Peut ajouter ou retirer des variables pour optimiser le modèle en termes d'AIC.
+
+- **Interprétation des résultats** :
+  - Le modèle final est celui avec le meilleur compromis entre l'ajustement du modèle et la complexité.
+  - Le résumé affiche les coefficients et statistiques similaires à `lm()`, mais le modèle a été sélectionné pour minimiser l'AIC.
+
+##### 3. **bestglm::bestglm()**
+
+- **Syntaxe** : `bestglm(data, IC = "AIC", family = gaussian)`
+
+- **Ajustement du modèle** : 
+  - Sélection de modèles basée sur le critère d'information d'Akaike (AIC) en utilisant des méthodes de sélection par sous-ensemble.
+  - Teste différentes combinaisons de variables et choisit la meilleure.
+
+- **Interprétation des résultats** :
+  - Le meilleur modèle est celui avec le plus bas AIC.
+  - Affiche le modèle sélectionné, mais peut nécessiter une inspection manuelle des résultats détaillés.
+
+##### 4. **leaps::regsubsets()**
+
+- **Syntaxe** : `regsubsets(formula, data, nvmax)`
+
+- **Ajustement du modèle** : 
+  - Utilise la sélection exhaustive ou par échantillonnage de sous-ensembles pour tester tous les sous-ensembles de variables jusqu'à une taille maximale spécifiée (`nvmax`).
+  - Ne renvoie pas directement un modèle ajusté, mais les sous-ensembles de variables les meilleurs.
+
+- **Interprétation des résultats** :
+  - Affiche les sous-ensembles des variables sélectionnées pour chaque taille du modèle.
+  - Nécessite des étapes supplémentaires pour examiner les résultats des sous-ensembles sélectionnés.
+
+##### 5. **MASS::rlm()**
+
+- **Syntaxe** : `rlm(formula, data)`
+
+- **Ajustement du modèle** : 
+  - Régression robuste qui minimise les influences des valeurs aberrantes.
+  - Utilise des techniques telles que les M-estimateurs pour réduire l'impact des valeurs extrêmes.
+
+- **Interprétation des résultats** :
+  - Résumé similaire à `lm()`, mais plus robuste aux valeurs aberrantes.
+  - Peut fournir des estimations plus fiables lorsque les données contiennent des valeurs extrêmes.
+
+##### 6. **BASE::glm()**
+
+- **Syntaxe** : `glm(formula, data, family)`
+
+- **Ajustement du modèle** : 
+  - Généralement utilisé pour des modèles de régression logistique ou autres modèles de la famille GLM, mais peut aussi être utilisé pour une régression linéaire.
+  - Permet de spécifier la famille de distributions pour les erreurs (ici, `gaussian` pour la régression linéaire).
+
+- **Interprétation des résultats** :
+  - Affiche les coefficients et autres statistiques similaires à `lm()`, mais avec des options pour différents types de distributions d'erreurs.
+
+##### Résumé des différences :
+
+- **Syntaxe** : `lm()`, `glm()`, et `rlm()` sont assez similaires, tandis que `stepAIC()`, `bestglm()`, et `regsubsets()` offrent des fonctionnalités supplémentaires pour la sélection de modèles. 
+
+- **Ajustement du modèle** : 
+  - `lm()` et `glm()` ajustent des modèles linéaires avec les moindres carrés.
+  - `rlm()` ajuste des modèles robustes.
+  - `stepAIC()`, `bestglm()`, et `regsubsets()` se concentrent sur la sélection de modèles.
+
+- **Interprétation des résultats** : 
+  - Les résultats de `lm()`, `glm()`, et `rlm()` sont directement comparables, mais `rlm()` est plus robuste aux valeurs aberrantes.
+  - `stepAIC()`, `bestglm()`, et `regsubsets()` fournissent des informations sur les modèles sélectionnés.
+
+
+7.3. Dans cette analyse, nous comparons les performances de différents modèles de régression en utilisant les métriques suivantes :
+- **RMSE (Root Mean Squared Error)**
+- **MAE (Mean Absolute Error)**
+- **R-squared**
+
+Les modèles évalués sont :
+- `lm` (Régression linéaire)
+- `stepAIC` (Régression linéaire avec sélection de variables basée sur AIC)
+- `bestglm` (Régression linéaire avec la meilleure sélection de variables)
+- `regsubsets` (Régression linéaire avec sélection de sous-ensembles)
+- `rlm` (Régression robuste)
+- `glm` (Régression généralisée)
+
+##### Résultats des métriques
+
+| Modèle           | RMSE      | MAE      | R-squared |
+|------------------|-----------|----------|-----------|
+| `lm`             | 69629.69  | 55906.28 | 0.09098204|
+| `stepAIC`        | 90741.09  | 78608.43 | 0.05023431|
+| `bestglm`        | 90473.61  | 78349.48 | 0.04958295|
+| `regsubsets`     | 71157.65  | 59326.96 | 0.05502422|
+| `rlm`            | 64053.09  | 51992.04 | 0.09251735|
+| `glm`            | 69629.69  | 55906.28 | 0.09098204|
+
+##### Analyse des performances
+
+- **RMSE (Root Mean Squared Error)**
+
+Le modèle `rlm` présente le RMSE le plus bas (64053.09), ce qui indique une meilleure précision des prédictions par rapport aux autres modèles. Le modèle `stepAIC` a le RMSE le plus élevé (90741.09), suggérant des erreurs de prédiction plus importantes.
+
+- **MAE (Mean Absolute Error)**
+
+Le modèle `rlm` a également le MAE le plus bas (51992.04), indiquant une erreur moyenne absolue plus petite. Le modèle `stepAIC` a le MAE le plus élevé (78608.43), ce qui indique une performance moins précise en termes d'erreurs absolues.
+
+- **R-squared**
+
+Le modèle `rlm` a le R-squared le plus élevé (0.09251735), signifiant qu'il explique la proportion la plus élevée de la variance des données. En revanche, `bestglm` a le R-squared le plus bas (0.04958295), suggérant une capacité moindre à expliquer la variance des données.
+
+##### Impacts des choix de fonctions sur les résultats
+
+- **Modèle `lm`**
+
+Le modèle de régression linéaire simple présente des résultats modérés avec des RMSE et MAE similaires à ceux du modèle `glm`. Sa performance en R-squared est comparable à celle de `rlm`, mais avec des erreurs moyennes plus élevées que `rlm`.
+
+- **Modèles `stepAIC` et `bestglm`**
+
+Ces modèles montrent des performances inférieures en termes de RMSE, MAE, et R-squared comparés aux autres modèles. Cela peut indiquer que la sélection de variables ou la méthode de sous-ensemble n'a pas réussi à améliorer la précision du modèle ou pourrait avoir surajusté les données.
+
+- **Modèle `regsubsets`**
+
+Ce modèle présente des résultats légèrement meilleurs que `stepAIC` et `bestglm`, mais reste inférieur à `lm` et `rlm`. La sélection de sous-ensembles a trouvé un bon compromis, mais n'est pas aussi performante que les autres approches.
+
+- **Modèle `rlm`**
+
+Le modèle robuste (`rlm`) se distingue comme étant le meilleur en termes de RMSE, MAE, et R-squared. Il est plus efficace pour gérer les valeurs aberrantes et fournir des prédictions plus précises.
+
+##### Conclusion
+
+Le choix de la fonction de modélisation a un impact significatif sur les résultats. Le modèle `rlm` est le plus performant parmi ceux évalués, tandis que les méthodes de sélection de variables comme `stepAIC` et `bestglm` ne montrent pas des améliorations notables et peuvent introduire des complexités supplémentaires.
+
+## 8. Visualisation  et  Présentation  des  Résultats
+8.1. Visualisations
+```{r, include= FALSE}
+# 6. Évaluation et Validation du Modèle
+
+# Charger les fichiers de données
+test <- read.csv("test.csv")
+sample_submission <- read.csv("sample_submission.csv")
+
+# Concaténer les deux fichiers pour inclure la variable cible SalePrice
+test_data <- cbind(test, SalePrice = sample_submission$SalePrice)
+
+# Variables gardées
+test_data <- test_data[, selected_vars]
+
+
+# Supprimer les lignes avec des données manquantes
+test_data <- na.omit(test_data)
+
+# Standardiser les données de test en utilisant les statistiques de l'ensemble d'entraînement
+mean_train <- colMeans(train_clean[, c("LotFrontage", "LotArea", "OverallQual", "OverallCond", "YearBuilt",
+                                           "X1stFlrSF", "X2ndFlrSF", "TotRmsAbvGrd", "GarageArea", "WoodDeckSF", "PoolArea")])
+sd_train <- apply(train_clean[, c("LotFrontage", "LotArea", "OverallQual", "OverallCond", "YearBuilt",
+                                      "X1stFlrSF", "X2ndFlrSF", "TotRmsAbvGrd", "GarageArea", "WoodDeckSF", "PoolArea")], 2, sd)
+test_data_scaled <- scale(test_data[, c("LotFrontage", "LotArea", "OverallQual", "OverallCond", "YearBuilt",
+                                            "X1stFlrSF", "X2ndFlrSF", "TotRmsAbvGrd", "GarageArea", "WoodDeckSF", "PoolArea")], center = mean_train, scale = sd_train)
+
+# Convertir en data frame
+test_data_scaled <- as.data.frame(test_data_scaled)
+
+# Ajouter la variable SalePrice aux données mises à l'échelle pour les évaluations
+
+test_data_scaled$SalePrice <- test_data$SalePrice
+
+
+# Faire des prédictions avec le modèle ajusté
+predictions <- predict(model, newdata = test_data_scaled)
+
+# Vérifier que les prédictions et les valeurs réelles ont la même longueur
+if (length(predictions) != nrow(test_data)) {
+  stop("La longueur des prédictions ne correspond pas au nombre de valeurs réelles.")
+}
+
+# Calculer les métriques de performance
+actuals <- test_data$SalePrice
+RMSE <- sqrt(mean((predictions - actuals)^2))
+MAE <- mean(abs(predictions - actuals))
+R2 <- cor(predictions, actuals)^2
+
+# Afficher les résultats
+cat("RMSE: ", RMSE, "\n")
+cat("MAE: ", MAE, "\n")
+cat("R²: ", R2, "\n")
+
+
+
+# 7. Comparaison   des  Fonctions  de   Régression  Linéaire   sous   R
+# 7.1) Comparer lm() avec d’autres fonctions et packages
+# BASE::lm()
+model_lm <- lm(SalePrice ~ OverallQual + GarageArea + X1stFlrSF + YearBuilt + TotRmsAbvGrd, data = df_scaled)
+summary(model_lm)
+# MASS::stepAIC()
+library(MASS)
+model_stepAIC <- stepAIC(lm(SalePrice ~ ., data = df_scaled), direction = "both")
+summary(model_stepAIC)
+
+
+# bestglm::bestglm()
+library(bestglm)
+model_bestglm <- bestglm(df_scaled, family = gaussian)
+summary(model_bestglm)
+model_Best <- model_bestglm$BestModel
+summary(model_Best)
+
+# Leaps::regsubsets()
+library(leaps)
+model_regsubsets <- regsubsets(SalePrice ~ ., data = df_scaled, nvmax = 5)
+summary(model_regsubsets)
+subset_summary  <- summary(model_regsubsets)
+# View R-squared values
+print(subset_summary$rsq)
+
+# View Adjusted R-squared values
+print(subset_summary$adjr2)
+
+# View Cp values
+print(subset_summary$cp)
+
+# View the matrix of selected variables for each model
+print(subset_summary$outmat)
+
+# MASS::rlm()
+model_rlm <- rlm(SalePrice ~ OverallQual + GarageArea + X1stFlrSF + YearBuilt + TotRmsAbvGrd, data = df_scaled)
+summary(model_rlm)
+
+# BASE::glm()
+model_glm <- glm(SalePrice ~ OverallQual + GarageArea + X1stFlrSF + YearBuilt + TotRmsAbvGrd, data = df_scaled)
+summary(model_glm)
+
+# 7.2) commentaire
+
+# 7.3) Comparer les performances des modèles
+# Fonction pour calculer les métriques de performance
+calculate_metrics <- function(model, data, actuals) {
+  predictions <- predict(model, newdata = data)
+  rmse <- sqrt(mean((predictions - actuals)^2))
+  mae <- mean(abs(predictions - actuals))
+  r2 <- cor(predictions, actuals)^2
+  return(c(RMSE = rmse, MAE = mae, R2 = r2))
+}
+calculate_metrics2 <- function(predictions, actuals) {
+  RMSE <- sqrt(mean((predictions - actuals)^2))
+  MAE <- mean(abs(predictions - actuals))
+  R2 <- cor(predictions, actuals)^2
+  return(c(RMSE = RMSE, MAE = MAE, R2 = R2))
+}
+
+# Appliquer la fonction à chaque modèle
+
+metrics_lm <- calculate_metrics(model_lm, test_data_scaled, test_data$SalePrice)
+print(metrics_lm)
+
+# 
+metrics_stepAIC <- calculate_metrics(model_stepAIC, test_data_scaled, test_data$SalePrice)
+
+# 
+metrics_bestglm <- calculate_metrics(model_Best, test_data_scaled, test_data$SalePrice)
+
+# Fonction pour prédire avec regsubsets
+predict_regsubsets <- function(object, newdata, id) {
+  form <- as.formula(paste("SalePrice ~", paste(names(coef(object, id = id))[-1], collapse = "+")))
+  mat <- model.matrix(form, newdata)
+  coefi <- coef(object, id = id)
+  xvars <- names(coefi)
+  mat[, xvars] %*% coefi
+}
+# 
+best_id <- which.min(summary(model_regsubsets)$cp)
+regsubsets_predictions <- predict_regsubsets(model_regsubsets, test_data_scaled, best_id)
+metrics_regsubsets <- calculate_metrics2(regsubsets_predictions, test_data_scaled$SalePrice)
+
+
+# 
+metrics_rlm <- calculate_metrics(model_rlm, test_data_scaled, test_data$SalePrice)
+# 
+metrics_glm <- calculate_metrics(model_glm, test_data_scaled, test_data$SalePrice)
+
+# Afficher les résultats
+metrics <- rbind(metrics_lm, metrics_stepAIC, metrics_bestglm, metrics_regsubsets, metrics_rlm, metrics_glm)
+colnames(metrics) <- c("RMSE", "MAE", "R2")
+print(metrics)
+
+```
+
+
+```{r visualisation_modèles}
+library(ggplot2)
+library(gridExtra)
+
+# Supposons que vous avez les valeurs réelles et les prédictions pour chaque modèle
+data <- data.frame(
+  Actual = test_data$SalePrice,
+  lm_pred = predict(model_lm, newdata = test_data_scaled),
+  stepAIC_pred = predict(model_stepAIC, newdata = test_data_scaled),
+  bestglm_pred = predict(model_Best, newdata = test_data_scaled),
+  regsubsets_pred = predict_regsubsets(model_regsubsets, newdata = test_data_scaled, id = best_id),
+  rlm_pred = predict(model_rlm, newdata = test_data_scaled),
+  glm_pred = predict(model_glm, newdata = test_data_scaled)
+)
+
+# Fonction pour créer un graphique de dispersion des prédictions vs valeurs réelles
+plot_predictions <- function(data, model_name) {
+  ggplot(data, aes_string(x = "Actual", y = paste0(model_name, "_pred"))) +
+    geom_point(alpha = 0.5) +
+    geom_abline(intercept = 0, slope = 1, color = "red") +
+    labs(title = paste("Prédictions vs Valeurs Réelles -", model_name),
+         x = "Valeurs Réelles",
+         y = "Prédictions") +
+    theme_minimal()
+}
+
+# Création des graphiques pour chaque modèle
+plot_lm <- plot_predictions(data, "lm")
+plot_stepAIC <- plot_predictions(data, "stepAIC")
+plot_bestglm <- plot_predictions(data, "bestglm")
+plot_regsubsets <- plot_predictions(data, "regsubsets")
+plot_rlm <- plot_predictions(data, "rlm")
+plot_glm <- plot_predictions(data, "glm")
+
+# Affichage des graphiques
+grid.arrange(plot_lm, plot_stepAIC, plot_bestglm, plot_regsubsets, plot_rlm, plot_glm, ncol = 2)
+
+```
+
+8.2. Analyse comparative :
+
+- **lm** : Offre des performances acceptables avec un R-squared de 0.09098204, mais pas le meilleur pour RMSE et MAE.
+- **stepAIC** : Montre des performances moins bonnes avec des valeurs de RMSE et MAE plus élevées et un R-squared plus bas.
+- **bestglm** : Similaire à stepAIC, avec une légère amélioration mais reste en dessous des autres modèles en termes de performance.
+- **regsubsets** : Performances légèrement meilleures que stepAIC et bestglm mais inférieures à lm et rlm.
+- **rlm** : Le meilleur en termes de RMSE, MAE et R-squared, indiquant une bonne gestion des valeurs aberrantes et des prédictions plus précises.
+- **glm** : Similaire à lm en termes de performances.
+Recommandation pour la prévision des prix pmmobiliers :
+
+Le modèle rlm est recommandé pour la prévision des prix immobiliers:
+- Il est conçu pour être robuste face aux valeurs aberrantes, ce qui est crucial dans les données immobilières où des prix très élevés ou très bas peuvent influencer le modèle de manière significative.
+- Le modèle avec les meilleures valeurs de RMSE, MAE, et R-squared, rlm fournit des prédictions plus précises et un meilleur ajustement aux données par rapport aux autres modèles.
+- Le modèle rlm explique mieux la variance des données, ce qui est essentiel pour comprendre les tendances des prix immobiliers.
+
+## 9. Discussion   et  Conclusions
+### Limites de l'Étude
+
+1. **Qualité des données** :
+   - **Incomplétude des données** : Les données disponibles peuvent être incomplètes ou manquantes pour certaines variables. Cela peut entraîner une sous-représentation de certaines caractéristiques importantes, affectant ainsi la qualité des prédictions.
+   - **Prétraitement des données** : Les étapes de prétraitement, comme la normalisation et la gestion des valeurs manquantes, peuvent introduire des biais si elles ne sont pas correctement effectuées.
+
+2. **Choix des variables** :
+   - **Variables sélectionnées** : Les modèles testés utilisent un ensemble fixe de variables explicatives. Il est possible que d'autres variables importantes non incluses dans le modèle pourraient améliorer les performances de prédiction.
+   - **Interactions entre variables** : Les modèles évalués ne tiennent pas toujours compte des interactions complexes entre variables, ce qui peut limiter leur capacité à capturer les relations sous-jacentes dans les données.
+
+3. **Généralisation des résultats** :
+   - **Échantillonnage** : L'échantillon de données utilisé peut ne pas être représentatif de l'ensemble du marché immobilier, ce qui pourrait affecter la généralisation des résultats à d'autres ensembles de données ou à des contextes différents.
+   - **Validité externe** : Les conclusions tirées de cette étude sont spécifiques aux données analysées. Les performances des modèles peuvent varier lorsqu'ils sont appliqués à de nouveaux ensembles de données ou dans des contextes différents.
+
+4. **Complexité des modèles** :
+   - **Modèles simples vs complexes** : Les modèles plus simples, comme la régression linéaire, peuvent ne pas capturer toute la complexité des relations entre variables, tandis que les modèles plus complexes peuvent être sensibles au bruit et aux valeurs aberrantes.
+
+### Discussion des modèles utilisés
+
+1. **Régression Linéaire (`lm`)** :
+   - **Forces** : Facilité d'utilisation et d'interprétation, convient bien aux données linéaires.
+   - **Limites** : Peut ne pas bien performer en présence de valeurs aberrantes ou de relations non linéaires.
+
+2. **Régression avec Sélection de Variables (`stepAIC`)** :
+   - **Forces** : Automatise la sélection des variables, ce qui peut aider à éviter le surajustement.
+   - **Limites** : Peut ne pas toujours sélectionner les variables les plus pertinentes et peut être sensible aux valeurs aberrantes.
+
+3. **Régression Basée sur les Sous-ensembles (`bestglm`)** :
+   - **Forces** : Identifie le meilleur sous-ensemble de variables en termes de critères statistiques.
+   - **Limites** : Peut être coûteux en termes de calcul et sensible aux valeurs aberrantes.
+
+4. **Régression par Sous-ensembles (`regsubsets`)** :
+   - **Forces** : Permet de comparer différents modèles en termes de sélection de variables.
+   - **Limites** : Peut devenir complexe avec un grand nombre de variables et ne tient pas compte des interactions entre variables.
+
+5. **Régression Robuste (`rlm`)** :
+   - **Forces** : Plus robuste aux valeurs aberrantes et aux violations des hypothèses de normalité.
+   - **Limites** : Peut être plus difficile à interpréter et nécessite un réglage approprié des paramètres.
+
+6. **Régression Généralisée (`glm`)** :
+   - **Forces** : Flexibilité pour différents types de distributions et liens.
+   - **Limites** : Peut nécessiter une spécification correcte du lien et de la distribution, et peut être sensible aux valeurs aberrantes.
+
+### Conclusions
+
+- **Modèle Recommandé** : Le modèle de régression robuste (`rlm`) a montré une performance supérieure en termes de précision (RMSE, MAE) et d'explication de la variance (R^2). Sa robustesse aux valeurs aberrantes en fait une option fiable pour la prévision des prix immobiliers.
+- **Améliorations Futures** : Pour améliorer les résultats, il serait bénéfique d'explorer davantage de variables explicatives, d'envisager des techniques de traitement de valeurs aberrantes plus avancées, et d'appliquer des méthodes d'évaluation croisée pour une validation plus rigoureuse des modèles.
+
+En conclusion, bien que les modèles testés offrent des perspectives précieuses, il est crucial de continuer à affiner les techniques et à élargir l'analyse pour obtenir des prévisions plus robustes et généralisables.
+
