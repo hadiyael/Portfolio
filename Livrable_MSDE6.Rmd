@@ -1,9 +1,6 @@
 ---
 title: "Livrable MSDE6 - Projet sous R"
 subtitle: "Prédire le prix d’une propriété immobilière par régression linéaire multiple"
-author:
-  - Hadiya El Ouazzani
-  - Majda Khayi
 date: "2024-07-26"
 output:
   pdf_document:
